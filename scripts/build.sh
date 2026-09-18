@@ -32,7 +32,7 @@ elif [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/tmp" ]; then
 else
     tmp_base="/tmp"
 fi
-build_dir=$(mktemp -d "$tmp_base/limbus-ios-pack.XXXXXX")
+build_dir=$(mktemp -d "$tmp_base/limbus-mobile-pack.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 
 printf '下载参考资源：%s\n' "$REFERENCE_REPO ($REFERENCE_TAG)"

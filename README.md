@@ -1,11 +1,12 @@
-# Limbus Company 第十章第一周 iOS 汉化资源打包
+# Limbus Company 移动端汉化资源打包
 
 本仓库只保存可复现的打包脚本，不提交生成的 `localize_jp.zip` 和
-`manifest.json`。
+`manifest.json`。生成的资源包供所有移动端 Limbus Company 客户端使用，通过替换
+日语资源槽位加载中文文本。
 
 ## 上游
 
-- [ghcruise/LimbusCompany-IOS-Localization](https://github.com/ghcruise/LimbusCompany-IOS-Localization)：提供 iOS 日语资源槽位的完整底包与 `manifest.json`。默认使用 Release `v1.114.0-alpha`。
+- [ghcruise/LimbusCompany-IOS-Localization](https://github.com/ghcruise/LimbusCompany-IOS-Localization)：提供移动端日语资源槽位的完整参考底包与 `manifest.json`。默认使用 Release `v1.114.0-alpha`。
 - [haool871/Limbus-Company-Chapter-10-Week-1-Chinese-Localization-Share](https://github.com/haool871/Limbus-Company-Chapter-10-Week-1-Chinese-Localization-Share)：提供第十章第一周增量汉化。默认使用提交 `a05c0b00c74c3b4c9c39a7e501d0012bbea317d7`。
 
 请遵守两个上游各自的许可与非商业使用要求。本仓库不对上游文本主张额外权利。
@@ -44,4 +45,3 @@ OUTPUT_DIR="$PWD/dist" \
 
 `REFERENCE_TAG=latest` 会使用参考仓库的最新 Release。发布时仅需将 `dist/` 中的两个
 文件作为 Release 附件上传；它们不会进入 Git 历史。
-
