@@ -21,6 +21,9 @@
 格式、覆盖后的文件内容及 ZIP 完整性都会在构建时检查。脚本还会重算成品内全部日文槽位文件的
 `Hash` 和 `Size`，避免客户端在每次启动时重复下载语言包。
 
+对于增量剧情中只提供 `model` 而缺少 `teller` 或 `title` 的台词，脚本会从底包的
+`ScenarioModelCodes` 角色表补全说话人和职位。增量上游已经显式填写的值会保留，以支持剧情中的特殊称呼。
+
 这种方式保留参考包的完整资源集合，同时只替换增量仓库提供的 129 个资源文件。
 如果新文本含有映射表和参考包均未覆盖的汉字，构建会直接失败并列出这些字符。
 
@@ -53,3 +56,22 @@ OUTPUT_DIR="$PWD/dist" \
 
 `REFERENCE_TAG=latest` 会使用参考仓库的最新 Release。发布时仅需将 `dist/` 中的两个
 文件作为 Release 附件上传；它们不会进入 Git 历史。
+
+## 本地 Nginx 配置
+
+[`nginx/nginx.conf`](nginx/nginx.conf) 用于 Android 设备上的本地 HTTPS 代理，默认目录为
+`/data/local/nginx`。它只监听 `127.0.0.1:443`，拦截 `LocalizePatchInfo.json` 和
+`localize_jp.zip`，其他请求使用两个 Cloudflare 回源地址。如果官方 CDN 更换 IP，
+需同步更新 `upstream limbus_cdn`。
+
+仓库不包含 TLS 证书和私钥。部署前需在 `/data/local/nginx/ssl/` 准备已被设备信任、
+且 SAN 覆盖 `downloadcommon.limbuscompanycdn.org` 的 `ca.crt` 和 `ca.key`。可在 root shell 中检查并加载配置：
+
+```sh
+cp nginx/nginx.conf /data/local/nginx/conf/nginx.conf
+/data/local/nginx/nginx -t -p /data/local/nginx/ -c conf/nginx.conf
+/data/local/nginx/nginx -s reload -p /data/local/nginx/ -c conf/nginx.conf
+```
+
+如果原配置监听所有网卡的 `443` 端口，改为回环地址时需完整重启 Nginx，
+因为热重载期间旧监听套接字仍会占用端口。
