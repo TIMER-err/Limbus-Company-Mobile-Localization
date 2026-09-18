@@ -6,6 +6,9 @@ REFERENCE_REPO="${REFERENCE_REPO:-ghcruise/LimbusCompany-IOS-Localization}"
 REFERENCE_TAG="${REFERENCE_TAG:-v1.114.0-alpha}"
 SOURCE_REPO="${SOURCE_REPO:-haool871/Limbus-Company-Chapter-10-Week-1-Chinese-Localization-Share}"
 SOURCE_REF="${SOURCE_REF:-a05c0b00c74c3b4c9c39a7e501d0012bbea317d7}"
+OFFICIAL_MANIFEST_URL="${OFFICIAL_MANIFEST_URL:-https://downloadcommon.limbuscompanycdn.org/l20260917_Xb6H-4JImhMTHdjlghDt/Assets/LocalizePatch/LocalizePatchInfo.json}"
+OFFICIAL_MANIFEST_SHA256="${OFFICIAL_MANIFEST_SHA256:-b54880d24c6b5f85a572c7ad2f46e232899a3145cf0abba7e84499f1653545fc}"
+OFFICIAL_CDN_IP="${OFFICIAL_CDN_IP:-}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -44,8 +47,30 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 printf '下载参考资源：%s\n' "$REFERENCE_REPO ($REFERENCE_TAG)"
 curl -fsSL --retry 3 --retry-delay 1 \
     -o "$build_dir/base.zip" "$release_url/localize_jp.zip"
-curl -fsSL --retry 3 --retry-delay 1 \
-    -o "$build_dir/manifest.json" "$release_url/manifest.json"
+
+printf '下载官方校验清单：%s\n' "$OFFICIAL_MANIFEST_URL"
+if [ -n "$OFFICIAL_CDN_IP" ]; then
+    curl -fsSL --retry 3 --retry-delay 1 \
+        --resolve "downloadcommon.limbuscompanycdn.org:443:$OFFICIAL_CDN_IP" \
+        -o "$build_dir/manifest.json" "$OFFICIAL_MANIFEST_URL"
+else
+    curl -fsSL --retry 3 --retry-delay 1 \
+        -o "$build_dir/manifest.json" "$OFFICIAL_MANIFEST_URL"
+fi
+
+actual_manifest_sha256=$(
+    "$PYTHON" - "$build_dir/manifest.json" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)
+if [ "$actual_manifest_sha256" != "$OFFICIAL_MANIFEST_SHA256" ]; then
+    printf '官方校验清单 SHA-256 不匹配：%s\n' "$actual_manifest_sha256" >&2
+    exit 1
+fi
 
 printf '获取增量资源：%s\n' "$SOURCE_REPO ($SOURCE_REF)"
 git init -q "$build_dir/source"
@@ -59,7 +84,8 @@ mkdir -p "$build_dir/output"
     "$build_dir/source/patch" \
     "$build_dir/manifest.json" \
     "$GLYPH_MAP" \
-    "$build_dir/output/localize_jp.zip" <<'PY'
+    "$build_dir/output/localize_jp.zip" \
+    "$build_dir/output/manifest.json" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -72,12 +98,17 @@ patch_dir = Path(sys.argv[2])
 manifest = Path(sys.argv[3])
 glyph_map_path = Path(sys.argv[4])
 output_zip = Path(sys.argv[5])
+output_manifest = Path(sys.argv[6])
 
 if not patch_dir.is_dir():
     raise SystemExit(f"找不到上游 patch 目录：{patch_dir}")
 
 with manifest.open(encoding="utf-8-sig") as stream:
-    json.load(stream)
+    manifest_data = json.load(stream)
+
+manifest_files = manifest_data.get("Files")
+if not isinstance(manifest_files, dict):
+    raise SystemExit("官方校验清单缺少 Files 字典")
 
 with glyph_map_path.open(encoding="utf-8") as stream:
     glyph_map = json.load(stream)
@@ -180,6 +211,19 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
             with resource.open(encoding="utf-8-sig") as stream:
                 json.load(stream)
 
+        resource_bytes = resource.read_bytes()
+        relative = resource.relative_to(resource_root).as_posix()
+        manifest_key = f"Assets/Resources_moved/Localize/jp/{relative}"
+        manifest_entry = manifest_files.get(manifest_key)
+        if not isinstance(manifest_entry, dict):
+            raise SystemExit(f"官方校验清单缺少日文资源：{manifest_key}")
+
+        # 官方 Hash 是将 CRLF 标准化为 LF 后的 MD5；Size 使用原始字节数。
+        manifest_entry["Hash"] = hashlib.md5(
+            resource_bytes.replace(b"\r\n", b"\n")
+        ).hexdigest()
+        manifest_entry["Size"] = len(resource_bytes)
+
     with zipfile.ZipFile(
         output_zip,
         "w",
@@ -208,12 +252,17 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
             if actual_hash != expected_hash:
                 raise SystemExit(f"覆盖文件校验失败：{name}")
 
+    output_manifest.write_text(
+        json.dumps(manifest_data, ensure_ascii=False, indent=4) + "\n",
+        encoding="utf-8",
+    )
+
 print(f"资源文件：{len(resource_files)}")
 print(f"增量覆盖：{len(patch_files)}")
 print(f"兼容字形替换：{replaced_characters}")
+print(f"清单更新：{len(resource_files)}")
 PY
 
-cp "$build_dir/manifest.json" "$build_dir/output/manifest.json"
 chmod 0644 "$build_dir/output/localize_jp.zip" "$build_dir/output/manifest.json"
 
 mkdir -p "$OUTPUT_DIR"
