@@ -11,6 +11,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/dist}"
 PYTHON="${PYTHON:-python3}"
+GLYPH_MAP="${GLYPH_MAP:-$PROJECT_ROOT/data/mobile-glyph-map.json}"
 
 for command_name in git curl "$PYTHON"; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -18,6 +19,11 @@ for command_name in git curl "$PYTHON"; do
         exit 1
     fi
 done
+
+if [ ! -f "$GLYPH_MAP" ]; then
+    printf '找不到移动端字形映射：%s\n' "$GLYPH_MAP" >&2
+    exit 1
+fi
 
 if [ "$REFERENCE_TAG" = "latest" ]; then
     release_url="https://github.com/$REFERENCE_REPO/releases/latest/download"
@@ -52,11 +58,11 @@ mkdir -p "$build_dir/output"
 "$PYTHON" - "$build_dir/base.zip" \
     "$build_dir/source/patch" \
     "$build_dir/manifest.json" \
+    "$GLYPH_MAP" \
     "$build_dir/output/localize_jp.zip" <<'PY'
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 import zipfile
@@ -64,13 +70,37 @@ import zipfile
 base_zip = Path(sys.argv[1])
 patch_dir = Path(sys.argv[2])
 manifest = Path(sys.argv[3])
-output_zip = Path(sys.argv[4])
+glyph_map_path = Path(sys.argv[4])
+output_zip = Path(sys.argv[5])
 
 if not patch_dir.is_dir():
     raise SystemExit(f"找不到上游 patch 目录：{patch_dir}")
 
 with manifest.open(encoding="utf-8-sig") as stream:
     json.load(stream)
+
+with glyph_map_path.open(encoding="utf-8") as stream:
+    glyph_map = json.load(stream)
+
+if not isinstance(glyph_map, dict) or not glyph_map:
+    raise SystemExit("移动端字形映射为空或格式错误")
+if any(
+    not isinstance(source, str)
+    or not isinstance(target, str)
+    or len(source) != 1
+    or len(target) != 1
+    for source, target in glyph_map.items()
+):
+    raise SystemExit("移动端字形映射必须由单字符键值组成")
+
+translation_table = str.maketrans(glyph_map)
+
+
+def is_cjk(character):
+    return (
+        "\u3400" <= character <= "\u9fff"
+        or "\uf900" <= character <= "\ufaff"
+    )
 
 with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
     stage = Path(stage_name)
@@ -91,6 +121,14 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
     if not resource_root.is_dir():
         raise SystemExit("参考 ZIP 缺少 LocalizeTemp_jp 目录")
 
+    resource_files = sorted(path for path in resource_root.rglob("*") if path.is_file())
+    reference_characters = set()
+    for resource in resource_files:
+        if resource.suffix.lower() == ".json":
+            text = resource.read_text(encoding="utf-8-sig")
+            json.loads(text)
+            reference_characters.update(text)
+
     patch_files = sorted(path for path in patch_dir.rglob("*") if path.is_file())
     if not patch_files:
         raise SystemExit("上游 patch 目录中没有资源文件")
@@ -100,6 +138,7 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
         raise SystemExit(f"patch 中存在非 JSON 文件：{non_json[0]}")
 
     expected_hashes = {}
+    replaced_characters = 0
     for source in patch_files:
         relative = source.relative_to(patch_dir)
         destination_relative = relative.parent / f"JP_{relative.name}"
@@ -110,15 +149,32 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
                 f"参考包中找不到增量资源的目标位置：{destination_relative.as_posix()}"
             )
 
-        with source.open(encoding="utf-8-sig") as stream:
-            json.load(stream)
+        source_text = source.read_text(encoding="utf-8-sig")
+        transformed_text = source_text.translate(translation_table)
+        json.loads(transformed_text)
 
-        shutil.copyfile(source, destination)
+        unsupported = sorted(
+            {
+                character
+                for character in transformed_text
+                if is_cjk(character) and character not in reference_characters
+            }
+        )
+        if unsupported:
+            characters = "".join(unsupported)
+            raise SystemExit(
+                f"{relative.as_posix()} 仍包含参考字库中未出现的汉字：{characters}"
+            )
+
+        transformed_bytes = transformed_text.encode("utf-8")
+        destination.write_bytes(transformed_bytes)
+        replaced_characters += sum(
+            source_text.count(character) for character in glyph_map
+        )
         expected_hashes[
             f"LocalizeTemp_jp/{destination_relative.as_posix()}"
-        ] = hashlib.sha256(source.read_bytes()).digest()
+        ] = hashlib.sha256(transformed_bytes).digest()
 
-    resource_files = sorted(path for path in resource_root.rglob("*") if path.is_file())
     for resource in resource_files:
         if resource.suffix.lower() == ".json":
             with resource.open(encoding="utf-8-sig") as stream:
@@ -154,6 +210,7 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
 
 print(f"资源文件：{len(resource_files)}")
 print(f"增量覆盖：{len(patch_files)}")
+print(f"兼容字形替换：{replaced_characters}")
 PY
 
 cp "$build_dir/manifest.json" "$build_dir/output/manifest.json"
