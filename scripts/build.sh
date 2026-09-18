@@ -170,6 +170,7 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
 
     expected_hashes = {}
     replaced_characters = 0
+    patched_destinations = []
     for source in patch_files:
         relative = source.relative_to(patch_dir)
         destination_relative = relative.parent / f"JP_{relative.name}"
@@ -199,12 +200,70 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
 
         transformed_bytes = transformed_text.encode("utf-8")
         destination.write_bytes(transformed_bytes)
+        patched_destinations.append((relative, destination))
         replaced_characters += sum(
             source_text.count(character) for character in glyph_map
         )
         expected_hashes[
             f"LocalizeTemp_jp/{destination_relative.as_posix()}"
         ] = hashlib.sha256(transformed_bytes).digest()
+
+    scenario_model_path = resource_root / "JP_ScenarioModelCodes-AutoCreated.json"
+    with scenario_model_path.open(encoding="utf-8-sig") as stream:
+        scenario_model_data = json.load(stream)
+
+    scenario_rows = scenario_model_data.get("dataList")
+    if not isinstance(scenario_rows, list):
+        raise SystemExit("角色表缺少 dataList 数组")
+
+    scenario_names = {
+        row["id"]: (row.get("name", ""), row.get("nickName", ""))
+        for row in scenario_rows
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    }
+
+    speaker_fields_added = {"teller": 0, "title": 0}
+
+    def fill_story_speaker_fields(value, source_name):
+        if isinstance(value, dict):
+            model = value.get("model")
+            if isinstance(model, str) and model and "content" in value:
+                names = scenario_names.get(model)
+                missing_fields = [
+                    field for field in ("teller", "title") if field not in value
+                ]
+                if missing_fields and names is None:
+                    fields = ", ".join(missing_fields)
+                    raise SystemExit(
+                        f"{source_name} 中的角色 {model!r} 缺少 {fields}，"
+                        "且无法从角色表补全"
+                    )
+                if "teller" not in value:
+                    value["teller"] = names[0]
+                    speaker_fields_added["teller"] += 1
+                if "title" not in value:
+                    value["title"] = names[1]
+                    speaker_fields_added["title"] += 1
+
+            for child in value.values():
+                fill_story_speaker_fields(child, source_name)
+        elif isinstance(value, list):
+            for child in value:
+                fill_story_speaker_fields(child, source_name)
+
+    for relative, destination in patched_destinations:
+        if not relative.parts or relative.parts[0] != "StoryData":
+            continue
+
+        with destination.open(encoding="utf-8-sig") as stream:
+            story_data = json.load(stream)
+        fill_story_speaker_fields(story_data, relative.as_posix())
+        story_bytes = (
+            json.dumps(story_data, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        destination.write_bytes(story_bytes)
+        destination_name = destination.relative_to(stage).as_posix()
+        expected_hashes[destination_name] = hashlib.sha256(story_bytes).digest()
 
     for resource in resource_files:
         if resource.suffix.lower() == ".json":
@@ -260,6 +319,8 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
 print(f"资源文件：{len(resource_files)}")
 print(f"增量覆盖：{len(patch_files)}")
 print(f"兼容字形替换：{replaced_characters}")
+print(f"剧情说话人补全：{speaker_fields_added['teller']}")
+print(f"剧情职位补全：{speaker_fields_added['title']}")
 print(f"清单更新：{len(resource_files)}")
 PY
 
