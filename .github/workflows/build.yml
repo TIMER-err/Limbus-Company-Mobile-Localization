@@ -99,6 +99,7 @@ jobs:
         env:
           # 锁定 check 阶段解析出的版本，避免两个任务之间上游又变了。
           LOCALIZE_TAG: ${{ needs.check.outputs.localize_tag }}
+          OFFICIAL_PATCH_URL: https://downloadcommon.limbuscompanycdn.org/${{ needs.check.outputs.patch_dir }}/Assets/LocalizePatch
         run: |
           set -euo pipefail
           # 官方 CDN 偶发 TLS 握手失败，curl --retry 兜不住，这里整体重试。
