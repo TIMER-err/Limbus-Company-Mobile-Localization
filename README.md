@@ -16,12 +16,11 @@
 |---|---|---|
 | `LOCALIZE_TAG` | `latest` | 汉化 Release 标签 |
 | `OFFICIAL_PATCH_URL` | 空 | 指定官方资源目录，跳过解析 |
-| `OFFICIAL_STATUS_URL` | [LCTA 状态 API](https://limbus.lcta.top/api/status) | 解析资源版本目录 |
-| `OFFICIAL_XAPK_URL` | APKPure 最新 XAPK | 状态接口不可用时，从 XAPK 提取版本目录 |
+| `OFFICIAL_XAPK_URL` | APKPure 最新 XAPK | 从 XAPK 提取资源目录与客户端版本 |
 | `OFFICIAL_CDN_IP` | 空 | 经本地代理访问官方 CDN 时的回源地址 |
 | `OUTPUT_DIR` | `dist/` | 输出目录 |
 
-将 `OFFICIAL_STATUS_URL` 或 `OFFICIAL_XAPK_URL` 置空可关闭对应解析步骤。无法解析资源版本目录时构建失败。
+将 `OFFICIAL_XAPK_URL` 置空可关闭自动解析；此时须通过 `OFFICIAL_PATCH_URL` 指定资源目录。无法解析资源版本目录时构建失败。
 
 ## GitHub Actions
 
@@ -43,7 +42,6 @@ gh api repos/:owner/:repo/dispatches -f event_type=upstream_update
 |---|---|
 | [Project Moon](https://projectmoon.studio/) / Limbus Company | 游戏与官方日语资源 |
 | [LocalizeLimbusCompany](https://github.com/LocalizeLimbusCompany/LocalizeLimbusCompany) | 简体中文译文 |
-| [LCTA](https://github.com/HZBHZB1234/LCTA-Limbus-company-transfer-auto) | 官方资源版本目录 |
 | [ghcruise/LimbusCompany-IOS-Localization](https://github.com/ghcruise/LimbusCompany-IOS-Localization) | 移动端字库覆盖范围 |
 | [OpenCC](https://github.com/BYVoid/OpenCC) | 部分简繁字形对应 |
 

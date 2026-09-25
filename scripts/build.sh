@@ -6,11 +6,8 @@ LOCALIZE_REPO="${LOCALIZE_REPO:-LocalizeLimbusCompany/LocalizeLimbusCompany}"
 LOCALIZE_TAG="${LOCALIZE_TAG:-latest}"
 OFFICIAL_CDN_HOST="https://downloadcommon.limbuscompanycdn.org"
 # 资源版本目录不写死在脚本里：它每次客户端更新都会变，写死就会静默产出过期的包。
-# 两级解析，都失败则构建失败。显式给 OFFICIAL_PATCH_URL 可跳过解析。
+# 默认直接从公开镜像的 XAPK 提取；显式给 OFFICIAL_PATCH_URL 可跳过解析。
 OFFICIAL_PATCH_URL="${OFFICIAL_PATCH_URL-}"
-# 一级：该服务从客户端资源里提取版本目录并公开发布。
-OFFICIAL_STATUS_URL="${OFFICIAL_STATUS_URL-https://limbus.lcta.top/api/status}"
-# 二级：直接用 HTTP Range 从公开镜像的 XAPK 里提取，不下载整包。
 OFFICIAL_XAPK_URL="${OFFICIAL_XAPK_URL-https://d.apkpure.com/b/XAPK/com.ProjectMoon.LimbusCompany?version=latest}"
 OFFICIAL_CDN_IP="${OFFICIAL_CDN_IP:-}"
 
@@ -66,32 +63,6 @@ fi
 build_dir=$(mktemp -d "$tmp_base/limbus-mobile-pack.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 
-# 状态服务返回 {"latest_token": {"token": "l20260924_...", ...}}。
-resolve_from_status() {
-    [ -n "$OFFICIAL_STATUS_URL" ] || return 1
-    curl -fsSL --retry 2 --retry-delay 1 --max-time 30 \
-        -o "$build_dir/status.json" "$OFFICIAL_STATUS_URL" 2>/dev/null || return 1
-    "$PYTHON" - "$build_dir/status.json" <<'PY'
-import json
-from pathlib import Path
-import re
-import sys
-
-try:
-    with Path(sys.argv[1]).open(encoding="utf-8-sig") as stream:
-        data = json.load(stream)
-except ValueError:
-    raise SystemExit(1)
-
-token = (data.get("latest_token") or {}).get("token")
-# 只接受形如 l20260924_<token> 的取值，避免把异常响应当成目录用。
-if isinstance(token, str) and re.fullmatch(r"l\d{8}_[A-Za-z0-9_-]+", token):
-    print(token)
-else:
-    raise SystemExit(1)
-PY
-}
-
 resolve_from_xapk() {
     [ -n "$OFFICIAL_XAPK_URL" ] || return 1
     "$PYTHON" "$SCRIPT_DIR/extract-version.py" "$OFFICIAL_XAPK_URL" \
@@ -110,21 +81,16 @@ game_version=""
 if [ -n "$OFFICIAL_PATCH_URL" ]; then
     printf '资源版本目录：由 OFFICIAL_PATCH_URL 指定\n'
 else
-    resolved=$(resolve_from_status || true)
+    printf '从公开镜像的 XAPK 提取资源版本目录\n'
+    resolved=$(resolve_from_xapk || true)
     if [ -n "$resolved" ]; then
-        printf '资源版本目录：%s（状态服务）\n' "$resolved"
-    else
-        printf '状态服务不可用，改从公开镜像的 XAPK 提取\n' >&2
-        resolved=$(resolve_from_xapk || true)
-        if [ -n "$resolved" ]; then
-            sed 's/^/  /' "$build_dir/xapk.err" >&2 || true
-            printf '资源版本目录：%s（XAPK 提取）\n' "$resolved"
-            game_version=$(sed -n 's/^game_version=//p' "$build_dir/xapk.txt")
-        fi
+        sed 's/^/  /' "$build_dir/xapk.err" >&2 || true
+        printf '资源版本目录：%s（XAPK 提取）\n' "$resolved"
+        game_version=$(sed -n 's/^game_version=//p' "$build_dir/xapk.txt")
     fi
     if [ -z "$resolved" ]; then
         printf '无法解析官方资源版本目录。\n' >&2
-        printf '状态服务与 XAPK 提取均失败；可用 OFFICIAL_PATCH_URL 显式指定后重试。\n' >&2
+        printf 'XAPK 提取失败；可用 OFFICIAL_PATCH_URL 显式指定后重试。\n' >&2
         [ -f "$build_dir/xapk.err" ] && sed 's/^/  /' "$build_dir/xapk.err" >&2
         exit 1
     fi
@@ -153,7 +119,7 @@ resolved_patch_dir=$(
     printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p'
 )
 if [ -n "${RESOLVE_ONLY:-}" ]; then
-    # 走一级解析时还没拿到版本号，这里通过镜像元数据补取。
+    # 显式指定资源目录或完整提取未带回版本号时，通过镜像元数据补取。
     [ -n "$game_version" ] || game_version=$(resolve_game_version || true)
     printf 'patch_dir=%s\n' "$resolved_patch_dir"
     printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
