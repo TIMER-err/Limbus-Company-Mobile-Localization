@@ -27,6 +27,7 @@ MAX_ENTRY_SIZE = 2048
 MERGE_GAP = 65536
 RANGES_PER_REQUEST = 20
 ATTEMPTS = 4
+METADATA_ATTEMPTS = 2
 
 stats = {"requests": 0, "bytes": 0}
 
@@ -47,19 +48,24 @@ def parse_game_version(*sources):
 
 
 def fetch_metadata(url):
-    """读取远程包大小与版本；HEAD 偶发失败时按区间请求相同策略重试。"""
-    for attempt in range(1, ATTEMPTS + 1):
+    """用单字节 Range GET 读取远程包大小与版本，避开镜像对 HEAD 的限制。"""
+    for attempt in range(1, METADATA_ATTEMPTS + 1):
         try:
             request = urllib.request.Request(
-                url, method="HEAD", headers={"User-Agent": USER_AGENT}
+                url,
+                headers={"User-Agent": USER_AGENT, "Range": "bytes=0-0"},
             )
-            with urllib.request.urlopen(request, timeout=60) as response:
-                total = int(response.headers["Content-Length"])
+            with urllib.request.urlopen(request, timeout=30) as response:
+                content_range = response.headers.get("Content-Range", "")
+                if "/" in content_range:
+                    total = int(content_range.rsplit("/", 1)[1])
+                else:
+                    total = int(response.headers["Content-Length"])
                 disposition = response.headers.get("Content-Disposition", "")
                 final_url = response.geturl()
             return total, parse_game_version(disposition, final_url)
         except Exception as exc:
-            if attempt == ATTEMPTS:
+            if attempt == METADATA_ATTEMPTS:
                 raise
             log(f"  元数据请求失败（{type(exc).__name__}），{2 * attempt} 秒后重试")
             time.sleep(2 * attempt)
