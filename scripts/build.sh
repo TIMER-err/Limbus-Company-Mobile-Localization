@@ -3,15 +3,15 @@
 set -eu
 
 LOCALIZE_REPO="${LOCALIZE_REPO:-LocalizeLimbusCompany/LocalizeLimbusCompany}"
-LOCALIZE_TAG="${LOCALIZE_TAG:-2026092102}"
-OFFICIAL_PATCH_DEFAULT="https://downloadcommon.limbuscompanycdn.org/l20260924_4eb8-Rb7MrVjKfF17k-j/Assets/LocalizePatch"
+LOCALIZE_TAG="${LOCALIZE_TAG:-latest}"
+OFFICIAL_CDN_HOST="https://downloadcommon.limbuscompanycdn.org"
+# 资源版本目录不写死在脚本里：它每次客户端更新都会变，写死就会静默产出过期的包。
+# 两级解析，都失败则构建失败。显式给 OFFICIAL_PATCH_URL 可跳过解析。
 OFFICIAL_PATCH_URL="${OFFICIAL_PATCH_URL-}"
-# 版本目录烤在客户端的 resources.assets 里，该服务把它提取出来公开发布。
+# 一级：该服务从客户端资源里提取版本目录并公开发布。
 OFFICIAL_STATUS_URL="${OFFICIAL_STATUS_URL-https://limbus.lcta.top/api/status}"
-# 客户端版本号，仅用于给产物命名；URL 里的 token 同样烤在客户端里。
-OFFICIAL_SERVERINFO_URL="${OFFICIAL_SERVERINFO_URL-https://downloadcommon.limbuscompanycdn.org/serverinfos_nRtXsw5JLHS4z5PsiNio.json}"
-# 官方大约每周换一次资源版本目录，过期的清单会让客户端反复重下语言包。
-OFFICIAL_MAX_AGE_DAYS="${OFFICIAL_MAX_AGE_DAYS:-7}"
+# 二级：直接用 HTTP Range 从公开镜像的 XAPK 里提取，不下载整包。
+OFFICIAL_XAPK_URL="${OFFICIAL_XAPK_URL-https://d.apkpure.com/b/XAPK/com.ProjectMoon.LimbusCompany?version=latest}"
 OFFICIAL_CDN_IP="${OFFICIAL_CDN_IP:-}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -67,7 +67,8 @@ build_dir=$(mktemp -d "$tmp_base/limbus-mobile-pack.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 
 # 状态服务返回 {"latest_token": {"token": "l20260924_...", ...}}。
-resolve_patch_dir() {
+resolve_from_status() {
+    [ -n "$OFFICIAL_STATUS_URL" ] || return 1
     curl -fsSL --retry 2 --retry-delay 1 --max-time 30 \
         -o "$build_dir/status.json" "$OFFICIAL_STATUS_URL" 2>/dev/null || return 1
     "$PYTHON" - "$build_dir/status.json" <<'PY'
@@ -91,48 +92,45 @@ else:
 PY
 }
 
-default_dir=$(printf '%s' "$OFFICIAL_PATCH_DEFAULT" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p')
+resolve_from_xapk() {
+    [ -n "$OFFICIAL_XAPK_URL" ] || return 1
+    "$PYTHON" "$SCRIPT_DIR/extract-version.py" "$OFFICIAL_XAPK_URL" \
+        > "$build_dir/xapk.txt" 2>"$build_dir/xapk.err" || return 1
+    sed -n 's/^token=//p' "$build_dir/xapk.txt"
+}
+
+# 镜像的 Content-Disposition 里带客户端版本号，一个 HEAD 请求即可，仅用于命名。
+resolve_game_version() {
+    [ -n "$OFFICIAL_XAPK_URL" ] || return 1
+    curl -fsSL --retry 2 --retry-delay 1 --max-time 30 -I \
+        -A "Mozilla/5.0 (Linux; Android 12)" "$OFFICIAL_XAPK_URL" 2>/dev/null \
+        | tr -d '\r' | sed -n 's/.*_\([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\)_.*/\1/p' \
+        | head -1
+}
+
+game_version=""
 if [ -n "$OFFICIAL_PATCH_URL" ]; then
     printf '资源版本目录：由 OFFICIAL_PATCH_URL 指定\n'
-elif [ -z "$OFFICIAL_STATUS_URL" ]; then
-    printf '资源版本目录：%s（状态服务已禁用，使用脚本内固定值）\n' "$default_dir"
-    OFFICIAL_PATCH_URL="$OFFICIAL_PATCH_DEFAULT"
 else
-    resolved=$(resolve_patch_dir || true)
-    if [ -z "$resolved" ]; then
-        printf '资源版本目录：%s（状态服务不可用，回退到脚本内固定值）\n' "$default_dir"
-        OFFICIAL_PATCH_URL="$OFFICIAL_PATCH_DEFAULT"
-    elif [ "$resolved" = "$default_dir" ]; then
-        printf '资源版本目录：%s（状态服务，与固定值一致）\n' "$resolved"
-        OFFICIAL_PATCH_URL="$OFFICIAL_PATCH_DEFAULT"
-    else
+    resolved=$(resolve_from_status || true)
+    if [ -n "$resolved" ]; then
         printf '资源版本目录：%s（状态服务）\n' "$resolved"
-        printf '  脚本内固定值 %s 已过时，建议更新成上面这个，\n' "$default_dir"
-        printf '  以便状态服务不可用时也能构建出正确的包。\n'
-        OFFICIAL_PATCH_URL=$(
-            printf '%s' "$OFFICIAL_PATCH_DEFAULT" | sed "s|/$default_dir/|/$resolved/|"
-        )
+    else
+        printf '状态服务不可用，改从公开镜像的 XAPK 提取\n' >&2
+        resolved=$(resolve_from_xapk || true)
+        if [ -n "$resolved" ]; then
+            sed 's/^/  /' "$build_dir/xapk.err" >&2 || true
+            printf '资源版本目录：%s（XAPK 提取）\n' "$resolved"
+            game_version=$(sed -n 's/^game_version=//p' "$build_dir/xapk.txt")
+        fi
     fi
-fi
-
-# 版本目录形如 l20260924_<token>，日期部分用来判断固定值是否过期。
-version_day=$(printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/l\([0-9]\{8\}\)_.*|\1|p')
-if [ -n "$version_day" ]; then
-    version_age=$(
-        "$PYTHON" - "$version_day" <<'PY'
-import datetime
-import sys
-
-day = datetime.datetime.strptime(sys.argv[1], "%Y%m%d").date()
-print((datetime.date.today() - day).days)
-PY
-    )
-    printf '官方资源版本：%s（%s 天前）\n' "$version_day" "$version_age"
-    if [ "$version_age" -gt "$OFFICIAL_MAX_AGE_DAYS" ]; then
-        printf '\n警告：正在使用的资源版本目录已过去 %s 天，官方很可能已经换版。\n' "$version_age" >&2
-        printf '      用过期清单打出来的包会让客户端每次启动都重下语言包。\n' >&2
-        printf '      启动一次游戏让本地代理记下新目录，再重新构建即可自动跟上。\n\n' >&2
+    if [ -z "$resolved" ]; then
+        printf '无法解析官方资源版本目录。\n' >&2
+        printf '状态服务与 XAPK 提取均失败；可用 OFFICIAL_PATCH_URL 显式指定后重试。\n' >&2
+        [ -f "$build_dir/xapk.err" ] && sed 's/^/  /' "$build_dir/xapk.err" >&2
+        exit 1
     fi
+    OFFICIAL_PATCH_URL="$OFFICIAL_CDN_HOST/$resolved/Assets/LocalizePatch"
 fi
 
 # 汉化文本的 Release 资源名里带有版本号，latest 需要先问出实际 tag。
@@ -153,30 +151,12 @@ PY
 fi
 
 # RESOLVE_ONLY 只解析上游版本并退出，供 CI 判断是否值得跑完整构建。
-resolved_patch_dir=$(printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p')
+resolved_patch_dir=$(
+    printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p'
+)
 if [ -n "${RESOLVE_ONLY:-}" ]; then
-    # 客户端版本号只用于命名，取不到就留空。
-    game_version=""
-    if download_official "$OFFICIAL_SERVERINFO_URL" "$build_dir/serverinfos.json" \
-            2>/dev/null; then
-        game_version=$(
-            "$PYTHON" - "$build_dir/serverinfos.json" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-with Path(sys.argv[1]).open(encoding="utf-8-sig") as stream:
-    entries = json.load(stream)
-
-for entry in entries if isinstance(entries, list) else []:
-    if entry.get("serverId") == "aos_product":
-        versions = entry.get("versions") or []
-        if versions:
-            print(versions[0])
-        break
-PY
-        )
-    fi
+    # 走一级解析时还没拿到版本号，这里补一个 HEAD；取不到就留空，命名会退化到日期。
+    [ -n "$game_version" ] || game_version=$(resolve_game_version || true)
     printf 'patch_dir=%s\n' "$resolved_patch_dir"
     printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
     printf 'game_version=%s\n' "$game_version"

@@ -8,7 +8,7 @@
 
 - [Limbus Company 官方 CDN](https://downloadcommon.limbuscompanycdn.org/)：提供原版日文底包 `localize_jp.zip` 和对应的校验清单 `LocalizePatchInfo.json`，清单用官方同目录发布的 `LocalizePatchInfo.hash` 校验。
 - [LCTA 边狱文件状态 API](https://limbus.lcta.top/api/status)：提供官方 CDN 当前的资源版本目录，由 [LCTA](https://github.com/HZBHZB1234/LCTA-Limbus-company-transfer-auto) 从客户端资源中提取并发布。
-- [LocalizeLimbusCompany](https://github.com/LocalizeLimbusCompany/LocalizeLimbusCompany)：提供全量汉化文本，取自 Release 附件 `LimbusLocalize_<tag>.zip`。默认使用 `2026092102`。
+- [LocalizeLimbusCompany](https://github.com/LocalizeLimbusCompany/LocalizeLimbusCompany)：提供全量汉化文本，取自 Release 附件 `LimbusLocalize_<tag>.zip`。默认使用最新 Release。
 
 本仓库不保存任何译文，只保存两份纯数据表：[`data/mobile-glyph-map.json`](data/mobile-glyph-map.json)
 是单字到单字的字形替换表，[`data/mobile-font-charset.txt`](data/mobile-font-charset.txt)
@@ -59,35 +59,41 @@ dist/manifest.json
 
 ```sh
 LOCALIZE_TAG=2026092102 \
-OFFICIAL_STATUS_URL=https://limbus.lcta.top/api/status \
 OFFICIAL_PATCH_URL=https://example.invalid/Assets/LocalizePatch \
-OFFICIAL_MAX_AGE_DAYS=7 \
+OFFICIAL_STATUS_URL=https://limbus.lcta.top/api/status \
+OFFICIAL_XAPK_URL=<xapk-direct-url> \
 OFFICIAL_CDN_IP=<optional-origin-ip> \
 OUTPUT_DIR="$PWD/dist" \
 ./scripts/build.sh
 ```
 
-`LOCALIZE_TAG=latest` 会使用汉化仓库的最新 Release。`OFFICIAL_PATCH_URL` 会跳过版本目录解析，
-`OFFICIAL_STATUS_URL=` 置空则直接使用脚本内固定值。本机 hosts 已把官方域名指向代理时
+`LOCALIZE_TAG` 默认 `latest`，即汉化仓库的最新 Release。本机 hosts 已把官方域名指向代理时
 （例如部署了下文的 Nginx），用 `OFFICIAL_CDN_IP` 指定回源地址绕开。
 发布时仅需将 `dist/` 中的两个文件作为 Release 附件上传；它们不会进入 Git 历史。
 
 ### 资源版本目录
 
 官方 CDN 的路径里带一段 `l<YYYYMMDD>_<token>`，随客户端版本变化，token 是随机的。它并非由 API 下发，
-而是**烤在客户端的 Unity 资源里**（`resources.assets` / 安卓的 `split_UnityDataAssetPack.apk`），
-正则 `downloadcommon\.limbuscompanycdn\.org/(l\d{8}_[A-Za-z0-9_-]+)` 即可提取。CDN 本身没有
-免认证的固定入口，`serverinfos_*.json` 的 `cdnUrl` 为空。
+而是**烤在客户端的 Unity 资源里**，正则 `downloadcommon\.limbuscompanycdn\.org/(l\d{8}_[A-Za-z0-9_-]+)`
+即可提取。CDN 本身没有免认证的固定入口，`serverinfos_*.json` 的 `cdnUrl` 为空。
 
-构建机上没有游戏文件，所以脚本改从 `OFFICIAL_STATUS_URL`（默认 LCTA 的状态 API）取这个目录。优先级：
+**脚本不内置任何版本目录默认值** —— 写死的值会在官方换版后静默产出过期的包，而过期的清单会让客户端
+每次启动都重下语言包。所以它每次都去解析，两级都失败就直接构建失败：
 
 1. 显式设置了 `OFFICIAL_PATCH_URL` —— 直接用，不做解析
-2. 状态 API 返回合法目录 —— 用它；与脚本内固定值不同时会提示更新固定值
-3. 状态 API 不可用、返回异常、或被置空 —— 回退到脚本内固定值
+2. `OFFICIAL_STATUS_URL`（默认 [LCTA 状态 API](https://limbus.lcta.top/api/status)）—— 一个 JSON 请求
+3. `OFFICIAL_XAPK_URL`（默认 APKPure 的 XAPK 直链）—— 状态服务不可用时，
+   由 [`scripts/extract-version.py`](scripts/extract-version.py) 提取
+4. 都失败 —— 报错退出，不猜、不回退
 
 取到的目录只接受 `l\d{8}_[A-Za-z0-9_-]+` 形式，异常响应不会被当成目录使用。
-构建开始时会打印版本目录的日期和距今天数，超过 `OFFICIAL_MAX_AGE_DAYS`（默认 7）给出警告 ——
-状态 API 正常时目录总是新的，这个警告实际只在回退到过期固定值时出现。
+把 `OFFICIAL_STATUS_URL` 或 `OFFICIAL_XAPK_URL` 置空可以单独禁用某一级。
+
+`extract-version.py` 不下载整包。XAPK 是一层 ZIP，内层 `UnityDataAssetPack.apk` 未压缩因而可直接
+寻址，目录字符串位于其 `assets/bin/Data/` 下某个几百字节的条目中。于是只需：取外层中央目录（几百字节）
+→ 取内层中央目录 → 筛出 ≤2KB 的候选条目、按 64KB 间隙合并成连续区间 → 用 `multipart/byteranges`
+批量取回并扫描。实测 1.4 GB 的包只传输约 **3.9 MB（0.27%）、23 个请求**。
+镜像响应头里的 `Content-Disposition` 顺带给出客户端版本号，仅用于给产物命名。
 
 底包与清单的一致性由两道检查保证，都不需要手工固定哈希：
 
