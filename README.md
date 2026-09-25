@@ -104,8 +104,9 @@ OUTPUT_DIR="$PWD/dist" \
 
 GitHub Actions 无法订阅其他仓库的 release 事件，所以只能轮询。为了让轮询足够便宜，工作流拆成两段：
 
-- `check`：每 30 分钟跑一次，用 `RESOLVE_ONLY=1 ./scripts/build.sh` 解析上游版本（约 1 秒，只发几个
-  HTTP 请求，不下载任何资源包），再判断是否需要构建。
+- `check`：每天早中晚各跑一次（UTC+8 的 08:00 / 12:00 / 20:00），用
+  `RESOLVE_ONLY=1 ./scripts/build.sh` 解析上游版本（约 1 秒，只发几个 HTTP 请求，
+  不下载任何资源包），再判断是否需要构建。
 - `build`：仅在 `check` 认为上游有更新时才运行，完成后发布 Release。
 
 判断依据是 Release 自身，不需要额外的状态文件。Release 按仓库既有习惯命名为
