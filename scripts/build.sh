@@ -99,13 +99,11 @@ resolve_from_xapk() {
     sed -n 's/^token=//p' "$build_dir/xapk.txt"
 }
 
-# 镜像的 Content-Disposition 里带客户端版本号，一个 HEAD 请求即可，仅用于命名。
+# 从镜像响应头或最终重定向 URL 读取客户端版本号，仅用于 Release 命名。
 resolve_game_version() {
     [ -n "$OFFICIAL_XAPK_URL" ] || return 1
-    curl -fsSL --retry 2 --retry-delay 1 --max-time 30 -I \
-        -A "Mozilla/5.0 (Linux; Android 12)" "$OFFICIAL_XAPK_URL" 2>/dev/null \
-        | tr -d '\r' | sed -n 's/.*_\([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\)_.*/\1/p' \
-        | head -1
+    "$PYTHON" "$SCRIPT_DIR/extract-version.py" --game-version \
+        "$OFFICIAL_XAPK_URL" 2>/dev/null
 }
 
 game_version=""
@@ -155,7 +153,7 @@ resolved_patch_dir=$(
     printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p'
 )
 if [ -n "${RESOLVE_ONLY:-}" ]; then
-    # 走一级解析时还没拿到版本号，这里补一个 HEAD；取不到就留空，命名会退化到日期。
+    # 走一级解析时还没拿到版本号，这里通过镜像元数据补取。
     [ -n "$game_version" ] || game_version=$(resolve_game_version || true)
     printf 'patch_dir=%s\n' "$resolved_patch_dir"
     printf 'localize_tag=%s\n' "$LOCALIZE_TAG"

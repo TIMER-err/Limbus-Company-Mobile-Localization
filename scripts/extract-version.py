@@ -14,11 +14,13 @@ import io
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 
 USER_AGENT = "Mozilla/5.0 (Linux; Android 12)"
 TOKEN = re.compile(rb"downloadcommon\.limbuscompanycdn\.org/(l\d{8}_[A-Za-z0-9_-]+)")
+GAME_VERSION = re.compile(r"(?<![\d.])(\d+\.\d+\.\d+)(?![\d.])")
 # 目录字符串所在的条目只有几百字节，放宽到 2KB 足够覆盖。
 MAX_ENTRY_SIZE = 2048
 # 相隔小于此值的区间合并，用更少的请求换少量多余流量。
@@ -31,6 +33,36 @@ stats = {"requests": 0, "bytes": 0}
 
 def log(message):
     print(message, file=sys.stderr)
+
+
+def parse_game_version(*sources):
+    """从响应头或重定向 URL 中提取客户端版本号。"""
+    for source in sources:
+        if not source:
+            continue
+        match = GAME_VERSION.search(urllib.parse.unquote_plus(source))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def fetch_metadata(url):
+    """读取远程包大小与版本；HEAD 偶发失败时按区间请求相同策略重试。"""
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            request = urllib.request.Request(
+                url, method="HEAD", headers={"User-Agent": USER_AGENT}
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                total = int(response.headers["Content-Length"])
+                disposition = response.headers.get("Content-Disposition", "")
+                final_url = response.geturl()
+            return total, parse_game_version(disposition, final_url)
+        except Exception as exc:
+            if attempt == ATTEMPTS:
+                raise
+            log(f"  元数据请求失败（{type(exc).__name__}），{2 * attempt} 秒后重试")
+            time.sleep(2 * attempt)
 
 
 def fetch(url, ranges):
@@ -121,14 +153,7 @@ def entry_data_offset(archive, info):
 
 
 def extract(url):
-    request = urllib.request.Request(
-        url, method="HEAD", headers={"User-Agent": USER_AGENT}
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        total = int(response.headers["Content-Length"])
-        disposition = response.headers.get("Content-Disposition", "")
-    version = re.search(r"_(\d+\.\d+\.\d+)_", disposition)
-    game_version = version.group(1) if version else ""
+    total, game_version = fetch_metadata(url)
     log(f"  远程包 {total:,} 字节" + (f"，客户端 {game_version}" if game_version else ""))
 
     outer = open_remote_zip(url, total)
@@ -181,9 +206,16 @@ def extract(url):
 
 
 def main(argv):
-    if len(argv) != 2:
-        raise SystemExit(f"用法：{argv[0]} <xapk-url>")
+    version_only = len(argv) == 3 and argv[1] == "--game-version"
+    if not version_only and len(argv) != 2:
+        raise SystemExit(f"用法：{argv[0]} [--game-version] <xapk-url>")
     try:
+        if version_only:
+            _, game_version = fetch_metadata(argv[2])
+            if not game_version:
+                raise SystemExit("XAPK 响应中没有客户端版本号")
+            print(game_version)
+            return 0
         token, game_version = extract(argv[1])
     except SystemExit:
         raise

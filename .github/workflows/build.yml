@@ -53,12 +53,11 @@ jobs:
           if [ -z "$patch_dir" ] || [ -z "$localize_tag" ]; then
             echo "::error::未能解析上游版本"; exit 1
           fi
-          # 沿用仓库既有命名；取不到客户端版本时退回资源目录日期。
-          if [ -n "$game_version" ]; then
-            release_tag="v${game_version}-${localize_tag}"
-          else
-            release_tag="${patch_dir%%_*}-${localize_tag}"
+          # 不再以资源目录日期生成另一套名称；临时取不到版本时留给下次轮询重试。
+          if [ -z "$game_version" ]; then
+            echo "::error::未能从 XAPK 响应解析客户端版本号"; exit 1
           fi
+          release_tag="v${game_version}-${localize_tag}"
 
           # 用 Release 本身当状态，无需额外的状态文件。
           existing_body=$(gh release view "$release_tag" --json body --jq .body 2>/dev/null || true)
