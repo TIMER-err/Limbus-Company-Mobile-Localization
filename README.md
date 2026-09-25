@@ -24,7 +24,7 @@
 
 ## GitHub Actions
 
-[`.github/workflows/build.yml`](.github/workflows/build.yml) 于 UTC+8 08:00、12:00、20:00 检查上游。汉化标签、客户端版本或官方资源目录变化时构建，并发布 `v<客户端版本>-<汉化标签>`。
+[`.github/workflows/build.yml`](.github/workflows/build.yml) 于 UTC+8 08:00、12:00、20:00 检查上游。客户端版本或汉化 Release 变化时构建，并发布 `v<客户端版本>-<汉化标签>`；相同组合已存在时跳过。
 
 手动触发：
 

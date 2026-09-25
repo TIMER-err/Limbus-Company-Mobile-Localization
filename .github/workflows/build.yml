@@ -59,21 +59,21 @@ jobs:
           fi
           release_tag="v${game_version}-${localize_tag}"
 
-          # 用 Release 本身当状态，无需额外的状态文件。
-          existing_body=$(gh release view "$release_tag" --json body --jq .body 2>/dev/null || true)
+          # Release 标签由「客户端版本 + 汉化版本」唯一确定；标签存在即表示该组合已构建。
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            release_exists=true
+          else
+            release_exists=false
+          fi
           if [ "$FORCE" = "true" ]; then
             should_build=true
             reason="强制构建"
-          elif [ -z "$existing_body" ]; then
+          elif [ "$release_exists" = "false" ]; then
             should_build=true
-            reason="上游有更新，尚无 Release $release_tag"
-          elif printf '%s' "$existing_body" | grep -qF "$patch_dir"; then
-            should_build=false
-            reason="Release $release_tag 已是当前上游组合"
+            reason="客户端版本或汉化版本有更新，尚无 Release $release_tag"
           else
-            # 客户端版本号与汉化 tag 都没变，但官方换了资源目录。
-            should_build=true
-            reason="Release $release_tag 记录的资源目录与当前不同，需重建"
+            should_build=false
+            reason="Release $release_tag 已覆盖当前客户端与汉化版本"
           fi
 
           {
