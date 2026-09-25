@@ -99,9 +99,29 @@ OUTPUT_DIR="$PWD/dist" \
 
 ## 在 GitHub Actions 中构建
 
-[`.github/workflows/build.yml`](.github/workflows/build.yml) 每天定时构建一次，也可手动触发。
-构建脚本只依赖 `curl` 和 Python 3，不涉及本地代理或设备文件，可直接在 runner 上运行。
-定时运行只上传 artifact；发布 Release 需手动触发并勾选 `publish`。
+[`.github/workflows/build.yml`](.github/workflows/build.yml) 负责自动构建与发布。构建脚本只依赖
+`curl` 和 Python 3，不涉及本地代理或设备文件，可直接在 runner 上运行。
+
+GitHub Actions 无法订阅其他仓库的 release 事件，所以只能轮询。为了让轮询足够便宜，工作流拆成两段：
+
+- `check`：每 30 分钟跑一次，用 `RESOLVE_ONLY=1 ./scripts/build.sh` 解析上游版本（约 1 秒，只发几个
+  HTTP 请求，不下载任何资源包），再判断是否需要构建。
+- `build`：仅在 `check` 认为上游有更新时才运行，完成后发布 Release。
+
+判断依据是 Release 自身，不需要额外的状态文件。Release 按仓库既有习惯命名为
+`v<客户端版本>-<汉化 tag>`，正文里记录当次使用的资源版本目录。三种情况会触发构建：
+
+1. 该 tag 还没有 Release —— 汉化上游发了新版本，或客户端版本变了
+2. Release 正文记录的资源版本目录与当前不同 —— 客户端版本号没变但官方换了资源目录
+3. 手动触发并勾选 `force`
+
+也可以用 `repository_dispatch` 立即触发，跳过轮询等待：
+
+```sh
+gh api repos/:owner/:repo/dispatches -f event_type=upstream_update
+```
+
+官方 CDN 偶发 TLS 握手失败，而 `curl --retry` 不覆盖握手层错误，所以构建步骤整体重试三次。
 
 ## 本地 Nginx 配置
 

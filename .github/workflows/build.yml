@@ -2,16 +2,20 @@ name: 构建汉化资源包
 
 on:
   schedule:
-    # 汉化上游与官方资源都可能随时更新，每天检查一次。
-    - cron: "0 20 * * *"
+    # GitHub 无法订阅其他仓库的 release 事件，只能轮询。
+    # check 任务很轻（两次 HTTP + 一次 gh 查询），上游没变就不跑构建。
+    - cron: "*/30 * * * *"
+  # 供外部通知立即构建：gh api repos/:owner/:repo/dispatches -f event_type=upstream_update
+  repository_dispatch:
+    types: [upstream_update]
   workflow_dispatch:
     inputs:
       localize_tag:
         description: "汉化 Release tag（留空用 latest）"
         required: false
         default: ""
-      publish:
-        description: "构建成功后发布 Release"
+      force:
+        description: "即使已有同名 Release 也重新构建"
         type: boolean
         required: false
         default: false
@@ -24,7 +28,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      localize_tag: ${{ steps.check.outputs.localize_tag }}
+      patch_dir: ${{ steps.check.outputs.patch_dir }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析上游版本并判断是否需要构建
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCALIZE_TAG: ${{ inputs.localize_tag || 'latest' }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          RESOLVE_ONLY=1 ./scripts/build.sh | tee resolve.log
+          patch_dir=$(sed -n 's/^patch_dir=//p' resolve.log)
+          localize_tag=$(sed -n 's/^localize_tag=//p' resolve.log)
+          game_version=$(sed -n 's/^game_version=//p' resolve.log)
+          if [ -z "$patch_dir" ] || [ -z "$localize_tag" ]; then
+            echo "::error::未能解析上游版本"; exit 1
+          fi
+          # 沿用仓库既有命名；取不到客户端版本时退回资源目录日期。
+          if [ -n "$game_version" ]; then
+            release_tag="v${game_version}-${localize_tag}"
+          else
+            release_tag="${patch_dir%%_*}-${localize_tag}"
+          fi
+
+          # 用 Release 本身当状态，无需额外的状态文件。
+          existing_body=$(gh release view "$release_tag" --json body --jq .body 2>/dev/null || true)
+          if [ "$FORCE" = "true" ]; then
+            should_build=true
+            reason="强制构建"
+          elif [ -z "$existing_body" ]; then
+            should_build=true
+            reason="上游有更新，尚无 Release $release_tag"
+          elif printf '%s' "$existing_body" | grep -qF "$patch_dir"; then
+            should_build=false
+            reason="Release $release_tag 已是当前上游组合"
+          else
+            # 客户端版本号与汉化 tag 都没变，但官方换了资源目录。
+            should_build=true
+            reason="Release $release_tag 记录的资源目录与当前不同，需重建"
+          fi
+
+          {
+            echo "patch_dir=$patch_dir"
+            echo "localize_tag=$localize_tag"
+            echo "release_tag=$release_tag"
+            echo "should_build=$should_build"
+          } >> "$GITHUB_OUTPUT"
+          echo "### $reason" >> "$GITHUB_STEP_SUMMARY"
+          printf '官方资源版本：`%s`\n汉化文本：`%s`\n' \
+            "$patch_dir" "$localize_tag" >> "$GITHUB_STEP_SUMMARY"
+
   build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,15 +97,23 @@ jobs:
       - name: 构建
         id: build
         env:
-          LOCALIZE_TAG: ${{ inputs.localize_tag || 'latest' }}
+          # 锁定 check 阶段解析出的版本，避免两个任务之间上游又变了。
+          LOCALIZE_TAG: ${{ needs.check.outputs.localize_tag }}
         run: |
-          set -o pipefail
-          ./scripts/build.sh 2>&1 | tee build.log
-          {
-            echo "localize_tag=$LOCALIZE_TAG"
-            echo "patch_dir=$(sed -n 's/^资源版本目录：\(l[0-9]\{8\}_[^（ ]*\).*/\1/p' build.log | head -1)"
-            echo "zip_sha256=$(sha256sum dist/localize_jp.zip | cut -d' ' -f1)"
-          } >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # 官方 CDN 偶发 TLS 握手失败，curl --retry 兜不住，这里整体重试。
+          for attempt in 1 2 3; do
+            if ./scripts/build.sh 2>&1 | tee build.log; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::构建连续 3 次失败"; exit 1
+            fi
+            echo "::warning::第 $attempt 次构建失败，30 秒后重试"
+            sleep 30
+          done
+          echo "zip_sha256=$(sha256sum dist/localize_jp.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha256=$(sha256sum dist/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: 汇总
         run: |
@@ -54,7 +127,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: localize-jp-${{ steps.build.outputs.patch_dir }}
+          name: localize-jp-${{ needs.check.outputs.release_tag }}
           path: |
             dist/localize_jp.zip
             dist/manifest.json
@@ -62,18 +135,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 定时运行只产出 artifact；发布 Release 需手动触发并勾选 publish。
       - name: 发布 Release
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.build.outputs.patch_dir }}-${{ steps.build.outputs.localize_tag }}
-          name: ${{ steps.build.outputs.patch_dir }} / ${{ steps.build.outputs.localize_tag }}
+          tag_name: ${{ needs.check.outputs.release_tag }}
+          name: ${{ needs.check.outputs.release_tag }}
           body: |
-            官方资源版本：`${{ steps.build.outputs.patch_dir }}`
-            汉化文本：`${{ steps.build.outputs.localize_tag }}`
+            官方资源版本：`${{ needs.check.outputs.patch_dir }}`
+            汉化文本：[`${{ needs.check.outputs.localize_tag }}`](https://github.com/LocalizeLimbusCompany/LocalizeLimbusCompany/releases/tag/${{ needs.check.outputs.localize_tag }})
 
-            `localize_jp.zip` SHA-256：`${{ steps.build.outputs.zip_sha256 }}`
+            ```
+            ${{ steps.build.outputs.zip_sha256 }}  localize_jp.zip
+            ${{ steps.build.outputs.manifest_sha256 }}  manifest.json
+            ```
           files: |
             dist/localize_jp.zip
             dist/manifest.json

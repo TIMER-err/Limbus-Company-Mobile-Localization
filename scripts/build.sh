@@ -8,6 +8,8 @@ OFFICIAL_PATCH_DEFAULT="https://downloadcommon.limbuscompanycdn.org/l20260924_4e
 OFFICIAL_PATCH_URL="${OFFICIAL_PATCH_URL-}"
 # 版本目录烤在客户端的 resources.assets 里，该服务把它提取出来公开发布。
 OFFICIAL_STATUS_URL="${OFFICIAL_STATUS_URL-https://limbus.lcta.top/api/status}"
+# 客户端版本号，仅用于给产物命名；URL 里的 token 同样烤在客户端里。
+OFFICIAL_SERVERINFO_URL="${OFFICIAL_SERVERINFO_URL-https://downloadcommon.limbuscompanycdn.org/serverinfos_nRtXsw5JLHS4z5PsiNio.json}"
 # 官方大约每周换一次资源版本目录，过期的清单会让客户端反复重下语言包。
 OFFICIAL_MAX_AGE_DAYS="${OFFICIAL_MAX_AGE_DAYS:-7}"
 OFFICIAL_CDN_IP="${OFFICIAL_CDN_IP:-}"
@@ -133,11 +135,6 @@ PY
     fi
 fi
 
-printf '下载官方日文底包：%s\n' "$OFFICIAL_PATCH_URL/localize_jp.zip"
-download_official "$OFFICIAL_PATCH_URL/localize_jp.zip" "$build_dir/base.zip"
-
-# 底包无 .hash 可校验，改为在 Python 阶段逐个文件比对清单，见下。
-
 # 汉化文本的 Release 资源名里带有版本号，latest 需要先问出实际 tag。
 if [ "$LOCALIZE_TAG" = "latest" ]; then
     curl -fsSL --retry 3 --retry-delay 1 \
@@ -154,6 +151,42 @@ with Path(sys.argv[1]).open(encoding="utf-8") as stream:
 PY
     )
 fi
+
+# RESOLVE_ONLY 只解析上游版本并退出，供 CI 判断是否值得跑完整构建。
+resolved_patch_dir=$(printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p')
+if [ -n "${RESOLVE_ONLY:-}" ]; then
+    # 客户端版本号只用于命名，取不到就留空。
+    game_version=""
+    if download_official "$OFFICIAL_SERVERINFO_URL" "$build_dir/serverinfos.json" \
+            2>/dev/null; then
+        game_version=$(
+            "$PYTHON" - "$build_dir/serverinfos.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+with Path(sys.argv[1]).open(encoding="utf-8-sig") as stream:
+    entries = json.load(stream)
+
+for entry in entries if isinstance(entries, list) else []:
+    if entry.get("serverId") == "aos_product":
+        versions = entry.get("versions") or []
+        if versions:
+            print(versions[0])
+        break
+PY
+        )
+    fi
+    printf 'patch_dir=%s\n' "$resolved_patch_dir"
+    printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
+    printf 'game_version=%s\n' "$game_version"
+    exit 0
+fi
+
+printf '下载官方日文底包：%s\n' "$OFFICIAL_PATCH_URL/localize_jp.zip"
+download_official "$OFFICIAL_PATCH_URL/localize_jp.zip" "$build_dir/base.zip"
+
+# 底包无 .hash 可校验，改为在 Python 阶段逐个文件比对清单，见下。
 
 printf '下载汉化文本：%s\n' "$LOCALIZE_REPO ($LOCALIZE_TAG)"
 curl -fsSL --retry 3 --retry-delay 1 \
