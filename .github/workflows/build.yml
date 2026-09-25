@@ -1,0 +1,80 @@
+name: 构建汉化资源包
+
+on:
+  schedule:
+    # 汉化上游与官方资源都可能随时更新，每天检查一次。
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      localize_tag:
+        description: "汉化 Release tag（留空用 latest）"
+        required: false
+        default: ""
+      publish:
+        description: "构建成功后发布 Release"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-localization
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建
+        id: build
+        env:
+          LOCALIZE_TAG: ${{ inputs.localize_tag || 'latest' }}
+        run: |
+          set -o pipefail
+          ./scripts/build.sh 2>&1 | tee build.log
+          {
+            echo "localize_tag=$LOCALIZE_TAG"
+            echo "patch_dir=$(sed -n 's/^资源版本目录：\(l[0-9]\{8\}_[^（ ]*\).*/\1/p' build.log | head -1)"
+            echo "zip_sha256=$(sha256sum dist/localize_jp.zip | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 汇总
+        run: |
+          {
+            echo "### 构建结果"
+            echo ""
+            echo '```'
+            cat build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: localize-jp-${{ steps.build.outputs.patch_dir }}
+          path: |
+            dist/localize_jp.zip
+            dist/manifest.json
+            build.log
+          if-no-files-found: error
+          retention-days: 14
+
+      # 定时运行只产出 artifact；发布 Release 需手动触发并勾选 publish。
+      - name: 发布 Release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.build.outputs.patch_dir }}-${{ steps.build.outputs.localize_tag }}
+          name: ${{ steps.build.outputs.patch_dir }} / ${{ steps.build.outputs.localize_tag }}
+          body: |
+            官方资源版本：`${{ steps.build.outputs.patch_dir }}`
+            汉化文本：`${{ steps.build.outputs.localize_tag }}`
+
+            `localize_jp.zip` SHA-256：`${{ steps.build.outputs.zip_sha256 }}`
+          files: |
+            dist/localize_jp.zip
+            dist/manifest.json
+          fail_on_unmatched_files: true
