@@ -34,10 +34,6 @@
 gh api repos/:owner/:repo/dispatches -f event_type=upstream_update
 ```
 
-## Nginx
-
-[`nginx/nginx.conf`](nginx/nginx.conf) 为 Android 本地 HTTPS 代理配置，监听 `127.0.0.1:443`，替换 `LocalizePatchInfo.json` 与 `localize_jp.zip`。证书置于 `/data/local/nginx/ssl/`，SAN 须包含 `downloadcommon.limbuscompanycdn.org`。证书不纳入本仓库。
-
 ## Credits
 
 | 来源 | 用途 |
