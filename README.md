@@ -26,6 +26,8 @@
 
 [`.github/workflows/build.yml`](.github/workflows/build.yml) 于 UTC+8 08:00、12:00、20:00 检查上游。客户端版本或汉化 Release 变化时构建，并发布 `v<客户端版本>-<汉化标签>`；相同组合已存在时跳过。
 
+检查任务只读取 XAPK 元数据中的客户端版本；仅在需要构建时才扫描 XAPK 获取官方资源目录。
+
 手动触发：
 
 ```sh

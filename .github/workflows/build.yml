@@ -33,7 +33,7 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       localize_tag: ${{ steps.check.outputs.localize_tag }}
-      patch_dir: ${{ steps.check.outputs.patch_dir }}
+      game_version: ${{ steps.check.outputs.game_version }}
       release_tag: ${{ steps.check.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v7
@@ -46,11 +46,10 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
-          RESOLVE_ONLY=1 ./scripts/build.sh | tee resolve.log
-          patch_dir=$(sed -n 's/^patch_dir=//p' resolve.log)
+          CHECK_ONLY=1 ./scripts/build.sh | tee resolve.log
           localize_tag=$(sed -n 's/^localize_tag=//p' resolve.log)
           game_version=$(sed -n 's/^game_version=//p' resolve.log)
-          if [ -z "$patch_dir" ] || [ -z "$localize_tag" ]; then
+          if [ -z "$localize_tag" ]; then
             echo "::error::未能解析上游版本"; exit 1
           fi
           # 不再以资源目录日期生成另一套名称；临时取不到版本时留给下次轮询重试。
@@ -77,14 +76,14 @@ jobs:
           fi
 
           {
-            echo "patch_dir=$patch_dir"
             echo "localize_tag=$localize_tag"
+            echo "game_version=$game_version"
             echo "release_tag=$release_tag"
             echo "should_build=$should_build"
           } >> "$GITHUB_OUTPUT"
           echo "### $reason" >> "$GITHUB_STEP_SUMMARY"
-          printf '官方资源版本：`%s`\n汉化文本：`%s`\n' \
-            "$patch_dir" "$localize_tag" >> "$GITHUB_STEP_SUMMARY"
+          printf '客户端版本：`%s`\n汉化文本：`%s`\n' \
+            "$game_version" "$localize_tag" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: check
@@ -96,9 +95,8 @@ jobs:
       - name: 构建
         id: build
         env:
-          # 锁定 check 阶段解析出的版本，避免两个任务之间上游又变了。
           LOCALIZE_TAG: ${{ needs.check.outputs.localize_tag }}
-          OFFICIAL_PATCH_URL: https://downloadcommon.limbuscompanycdn.org/${{ needs.check.outputs.patch_dir }}/Assets/LocalizePatch
+          EXPECTED_GAME_VERSION: ${{ needs.check.outputs.game_version }}
         run: |
           set -euo pipefail
           # 官方 CDN 偶发 TLS 握手失败，curl --retry 兜不住，这里整体重试。
@@ -112,6 +110,11 @@ jobs:
             echo "::warning::第 $attempt 次构建失败，30 秒后重试"
             sleep 30
           done
+          patch_dir=$(sed -n 's/^patch_dir=//p' build.log | tail -1)
+          if [ -z "$patch_dir" ]; then
+            echo "::error::构建日志缺少官方资源版本"; exit 1
+          fi
+          echo "patch_dir=$patch_dir" >> "$GITHUB_OUTPUT"
           echo "zip_sha256=$(sha256sum dist/localize_jp.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "manifest_sha256=$(sha256sum dist/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
@@ -141,7 +144,7 @@ jobs:
           tag_name: ${{ needs.check.outputs.release_tag }}
           name: ${{ needs.check.outputs.release_tag }}
           body: |
-            官方资源版本：`${{ needs.check.outputs.patch_dir }}`
+            官方资源版本：`${{ steps.build.outputs.patch_dir }}`
             汉化文本：[`${{ needs.check.outputs.localize_tag }}`](https://github.com/LocalizeLimbusCompany/LocalizeLimbusCompany/releases/tag/${{ needs.check.outputs.localize_tag }})
 
             ```

@@ -77,6 +77,31 @@ resolve_game_version() {
         "$OFFICIAL_XAPK_URL" 2>/dev/null
 }
 
+# 汉化文本的 Release 资源名里带有版本号，latest 需要先问出实际 tag。
+if [ "$LOCALIZE_TAG" = "latest" ]; then
+    curl -fsSL --retry 3 --retry-delay 1 \
+        -o "$build_dir/release.json" \
+        "https://api.github.com/repos/$LOCALIZE_REPO/releases/latest"
+    LOCALIZE_TAG=$(
+        "$PYTHON" - "$build_dir/release.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+with Path(sys.argv[1]).open(encoding="utf-8") as stream:
+    print(json.load(stream)["tag_name"])
+PY
+    )
+fi
+
+# CHECK_ONLY 只读取轻量元数据，避免没有更新时扫描 XAPK 获取资源目录。
+if [ -n "${CHECK_ONLY:-}" ]; then
+    game_version=$(resolve_game_version || true)
+    printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
+    printf 'game_version=%s\n' "$game_version"
+    exit 0
+fi
+
 game_version=""
 if [ -n "$OFFICIAL_PATCH_URL" ]; then
     printf '资源版本目录：由 OFFICIAL_PATCH_URL 指定\n'
@@ -97,33 +122,30 @@ else
     OFFICIAL_PATCH_URL="$OFFICIAL_CDN_HOST/$resolved/Assets/LocalizePatch"
 fi
 
-# 汉化文本的 Release 资源名里带有版本号，latest 需要先问出实际 tag。
-if [ "$LOCALIZE_TAG" = "latest" ]; then
-    curl -fsSL --retry 3 --retry-delay 1 \
-        -o "$build_dir/release.json" \
-        "https://api.github.com/repos/$LOCALIZE_REPO/releases/latest"
-    LOCALIZE_TAG=$(
-        "$PYTHON" - "$build_dir/release.json" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-with Path(sys.argv[1]).open(encoding="utf-8") as stream:
-    print(json.load(stream)["tag_name"])
-PY
-    )
-fi
-
-# RESOLVE_ONLY 只解析上游版本并退出，供 CI 判断是否值得跑完整构建。
 resolved_patch_dir=$(
     printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p'
 )
-if [ -n "${RESOLVE_ONLY:-}" ]; then
-    # 显式指定资源目录或完整提取未带回版本号时，通过镜像元数据补取。
+
+# 显式指定资源目录时，按需从轻量元数据补充客户端版本。
+if [ -n "${EXPECTED_GAME_VERSION:-}" ] || [ -n "${RESOLVE_ONLY:-}" ]; then
     [ -n "$game_version" ] || game_version=$(resolve_game_version || true)
-    printf 'patch_dir=%s\n' "$resolved_patch_dir"
-    printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
-    printf 'game_version=%s\n' "$game_version"
+fi
+
+# 构建任务重新解析 XAPK；若客户端已在两个任务之间更新，拒绝发布到旧版本标签。
+if [ -n "${EXPECTED_GAME_VERSION:-}" ]; then
+    if [ "$game_version" != "$EXPECTED_GAME_VERSION" ]; then
+        printf '客户端版本在检查后发生变化：检查时 %s，构建时 %s\n' \
+            "$EXPECTED_GAME_VERSION" "${game_version:-未知}" >&2
+        exit 1
+    fi
+fi
+
+printf 'patch_dir=%s\n' "$resolved_patch_dir"
+printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
+printf 'game_version=%s\n' "$game_version"
+
+# RESOLVE_ONLY 完整解析 XAPK 后输出元数据，不下载和改写资源包。
+if [ -n "${RESOLVE_ONLY:-}" ]; then
     exit 0
 fi
 
