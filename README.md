@@ -28,6 +28,8 @@
 
 检查任务只读取 XAPK 元数据中的客户端版本；仅在需要构建时才扫描 XAPK 获取官方资源目录。
 
+上游译文出现移动端字库未覆盖的汉字时，构建会失败并报告文件与字符。将缺字加入 [`data/mobile-glyph-map.json`](data/mobile-glyph-map.json)，映射到 [`data/mobile-font-charset.txt`](data/mobile-font-charset.txt) 中已确认可显示的字形；不要仅为通过校验就将未确认的字符加入字库清单。
+
 手动触发：
 
 ```sh
