@@ -79,9 +79,16 @@ resolve_game_version() {
 
 # 汉化文本的 Release 资源名里带有版本号，latest 需要先问出实际 tag。
 if [ "$LOCALIZE_TAG" = "latest" ]; then
-    curl -fsSL --retry 3 --retry-delay 1 \
-        -o "$build_dir/release.json" \
-        "https://api.github.com/repos/$LOCALIZE_REPO/releases/latest"
+    if [ -n "${GH_TOKEN:-}" ]; then
+        curl -fsSL --retry 3 --retry-delay 1 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -o "$build_dir/release.json" \
+            "https://api.github.com/repos/$LOCALIZE_REPO/releases/latest"
+    else
+        curl -fsSL --retry 3 --retry-delay 1 \
+            -o "$build_dir/release.json" \
+            "https://api.github.com/repos/$LOCALIZE_REPO/releases/latest"
+    fi
     LOCALIZE_TAG=$(
         "$PYTHON" - "$build_dir/release.json" <<'PY'
 import json
@@ -242,9 +249,22 @@ if not reference_characters:
 
 
 def is_cjk(character):
+    code = ord(character)
     return (
-        "㐀" <= character <= "鿿"
-        or "豈" <= character <= "﫿"
+        0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0x20000 <= code <= 0x2A6DF
+        or 0x2A700 <= code <= 0x2B73F
+        or 0x2B740 <= code <= 0x2B81F
+        or 0x2B820 <= code <= 0x2CEAF
+        or 0x2CEB0 <= code <= 0x2EBEF
+        or 0x2EBF0 <= code <= 0x2EE5F
+        or 0x2F800 <= code <= 0x2FA1F
+        or 0x30000 <= code <= 0x3134F
+        or 0x31350 <= code <= 0x323AF
+        or 0x323B0 <= code <= 0x3347F
+        or code == 0x3007
     )
 
 with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
@@ -356,7 +376,11 @@ with tempfile.TemporaryDirectory(prefix="limbus-stage-") as stage_name:
                 skipped.append(member.filename)
                 continue
 
-            source_text = archive.read(member).decode("utf-8-sig")
+            source_text = json.dumps(
+                json.loads(archive.read(member).decode("utf-8-sig")),
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n"
             transformed_text = source_text.translate(translation_table)
             json.loads(transformed_text)
 

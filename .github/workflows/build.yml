@@ -1,6 +1,10 @@
 name: 构建汉化资源包
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - data/mobile-glyph-map.json
   schedule:
     # GitHub 无法订阅其他仓库的 release 事件，只能轮询。
     # cron 用 UTC，以下对应 UTC+8 的 08:00 / 12:00 / 20:00。
@@ -21,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-localization
@@ -29,6 +33,7 @@ concurrency:
 
 jobs:
   check:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
@@ -43,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           LOCALIZE_TAG: ${{ inputs.localize_tag || 'latest' }}
-          FORCE: ${{ inputs.force }}
+          FORCE: ${{ inputs.force || github.event_name == 'push' }}
         run: |
           set -euo pipefail
           CHECK_ONLY=1 ./scripts/build.sh | tee resolve.log
@@ -82,12 +87,132 @@ jobs:
             echo "should_build=$should_build"
           } >> "$GITHUB_OUTPUT"
           echo "### $reason" >> "$GITHUB_STEP_SUMMARY"
-          printf '客户端版本：`%s`\n汉化文本：`%s`\n' \
+          printf "客户端版本：\`%s\`\n汉化文本：\`%s\`\n" \
             "$game_version" "$localize_tag" >> "$GITHUB_STEP_SUMMARY"
 
-  build:
+  glyph-review:
     needs: check
     if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      ready: ${{ steps.scan.outputs.ready }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LOCALIZE_TAG: ${{ needs.check.outputs.localize_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: 下载已检查的汉化版本并扫描缺字
+        id: scan
+        run: |
+          set -euo pipefail
+          review_dir="$RUNNER_TEMP/glyph-review"
+          mkdir -p "$review_dir"
+          asset_name="LimbusLocalize_${LOCALIZE_TAG}.zip"
+          encoded_tag=$(jq -rn --arg tag "$LOCALIZE_TAG" '$tag | @uri')
+          gh api "repos/LocalizeLimbusCompany/LocalizeLimbusCompany/releases/tags/$encoded_tag" \
+            > "$review_dir/release.json"
+          asset_id=$(jq -er --arg name "$asset_name" \
+            '[.assets[] | select(.name == $name)] | if length == 1 then .[0].id else error("expected exactly one translation asset") end' \
+            "$review_dir/release.json")
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/LocalizeLimbusCompany/LocalizeLimbusCompany/releases/assets/$asset_id" \
+            > "$review_dir/localize.zip"
+          status=0
+          python3 scripts/check-glyphs.py "$review_dir/localize.zip" \
+            --tag "$LOCALIZE_TAG" --report "$review_dir/report.md" || status=$?
+          case "$status" in
+            0) echo "ready=true" >> "$GITHUB_OUTPUT" ;;
+            2) echo "ready=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+          digest=$(printf '%s' "$LOCALIZE_TAG" | sha256sum | cut -d' ' -f1)
+          echo "branch=glyph-review/$digest" >> "$GITHUB_OUTPUT"
+
+      - name: 生成可视候选和完整映射提案
+        if: steps.scan.outputs.ready == 'false'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-pil python3-fonttools fonts-noto-cjk
+          status=0
+          python3 scripts/check-glyphs.py "$RUNNER_TEMP/glyph-review/localize.zip" \
+            --tag "$LOCALIZE_TAG" --report "$RUNNER_TEMP/glyph-review/report.md" \
+            --font /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+            --proposal "$RUNNER_TEMP/glyph-review/proposed-map.json" || status=$?
+          if [ "$status" -ne 2 ]; then
+            echo "::error::候选生成必须保留缺字审核状态（退出码 2），实际为 $status"
+            exit 1
+          fi
+
+      - name: 查找已有审核 PR（不改写人工修改）
+        if: steps.scan.outputs.ready == 'false'
+        id: existing
+        env:
+          REVIEW_BRANCH: ${{ steps.scan.outputs.branch }}
+        run: |
+          set -euo pipefail
+          url=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --base main --head "$REVIEW_BRANCH" --json url --jq '.[0].url // empty')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          if [ -z "$url" ]; then
+            cp "$RUNNER_TEMP/glyph-review/proposed-map.json" data/mobile-glyph-map.json
+            cp "$RUNNER_TEMP/glyph-review/report.md" data/mobile-glyph-review.md
+          fi
+
+      - name: 创建人工审核 PR
+        if: steps.scan.outputs.ready == 'false' && steps.existing.outputs.url == ''
+        id: proposal
+        uses: peter-evans/create-pull-request@v8.1.3
+        with:
+          token: ${{ github.token }}
+          base: main
+          branch: ${{ steps.scan.outputs.branch }}
+          add-paths: |
+            data/mobile-glyph-map.json
+            data/mobile-glyph-review.md
+          commit-message: "Propose mobile glyph replacements for human review"
+          title: "审核汉化缺字映射：${{ needs.check.outputs.localize_tag }}"
+          body: |
+            上游汉化版本：`${{ needs.check.outputs.localize_tag }}`
+
+            请人工审核 data/mobile-glyph-review.md 中的全部缺字和候选，并修改映射。
+            候选仅按字形相似度排序，不代表语义等价；没有候选的字符需要人工处理。
+            此提案不会用于本次发布。审核合并后自动重新检查，仅在缺字全部解决后发布。
+
+      - name: 链接审核 PR 并阻止发布
+        if: steps.scan.outputs.ready == 'false'
+        env:
+          EXISTING_URL: ${{ steps.existing.outputs.url }}
+          CREATED_URL: ${{ steps.proposal.outputs.pull-request-url }}
+        run: |
+          set -euo pipefail
+          url="${EXISTING_URL:-$CREATED_URL}"
+          if [ -z "$url" ]; then
+            echo "::error::缺字审核 PR 未创建"
+            exit 1
+          fi
+          printf '### 缺字：发布已暂停\n\n[人工审核映射提案](%s)\n\n已有 PR 的分支不会被自动改写。\n' \
+            "$url" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.scan.outputs.ready == 'false'
+        with:
+          name: mobile-glyph-review
+          path: ${{ runner.temp }}/glyph-review/report.md
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    needs: [check, glyph-review]
+    if: needs.check.outputs.should_build == 'true' && needs.glyph-review.outputs.ready == 'true'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -114,9 +239,11 @@ jobs:
           if [ -z "$patch_dir" ]; then
             echo "::error::构建日志缺少官方资源版本"; exit 1
           fi
-          echo "patch_dir=$patch_dir" >> "$GITHUB_OUTPUT"
-          echo "zip_sha256=$(sha256sum dist/localize_jp.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "manifest_sha256=$(sha256sum dist/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "patch_dir=$patch_dir"
+            echo "zip_sha256=$(sha256sum dist/localize_jp.zip | cut -d' ' -f1)"
+            echo "manifest_sha256=$(sha256sum dist/manifest.json | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
           (cd dist && sha256sum localize_jp.zip manifest.json > checksums.sha256)
 
       - name: 汇总
