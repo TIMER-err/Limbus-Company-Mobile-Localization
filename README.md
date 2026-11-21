@@ -57,6 +57,14 @@ python3 scripts/check-glyphs.py LimbusLocalize_TAG.zip --report glyph-review.md
 gh api repos/:owner/:repo/dispatches -f event_type=upstream_update
 ```
 
+强制构建但不创建或更新 Release（产物仍上传到本次 Actions 运行）：
+
+```sh
+gh workflow run build.yml --ref main -f force=true -f publish_release=false
+```
+
+`publish_release` 默认开启，不改变定时任务和上游通知的发布行为。
+
 ## Credits
 
 | 来源 | 用途 |
