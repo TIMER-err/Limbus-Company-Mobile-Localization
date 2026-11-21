@@ -50,6 +50,7 @@ class VersionResolutionTests(unittest.TestCase):
         self.deny_requests = False
         self.ignore_range = False
         self.disposition = ""
+        self.error_headers = {}
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -60,6 +61,8 @@ class VersionResolutionTests(unittest.TestCase):
                 if owner.deny_requests:
                     self.send_response(403)
                     self.send_header("Content-Length", "0")
+                    for name, value in owner.error_headers.items():
+                        self.send_header(name, value)
                     self.end_headers()
                     return
                 if self.path == "/latest":
@@ -153,12 +156,17 @@ class VersionResolutionTests(unittest.TestCase):
 
     def test_check_only_preserves_the_http_error_and_exits_unsuccessfully(self):
         self.deny_requests = True
+        self.error_headers = {"cf-mitigated": "challenge"}
+        self.url += "?token=private-signature"
         environment = dict(os.environ, CHECK_ONLY="1", LOCALIZE_TAG="2026111901",
                            OFFICIAL_XAPK_URL=self.url, PYTHON=sys.executable)
         result = subprocess.run(["sh", str(ROOT / "scripts/build.sh")], cwd=ROOT,
                                 env=environment, capture_output=True, text=True, timeout=15)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("403", result.stderr)
+        self.assertIn("Cloudflare", result.stderr)
+        self.assertIn(self.url.split("?", 1)[0], result.stderr)
+        self.assertNotIn("private-signature", result.stderr)
         self.assertNotIn("game_version=", result.stdout)
 
 

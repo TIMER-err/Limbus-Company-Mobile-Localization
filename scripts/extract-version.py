@@ -15,6 +15,7 @@ import json
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -231,6 +232,10 @@ def main(argv):
         token, game_version = extract(argv[1])
     except SystemExit:
         raise
+    except urllib.error.HTTPError as exc:
+        endpoint = exc.geturl().split("?", 1)[0].split("#", 1)[0]
+        challenge = "（Cloudflare 验证页）" if exc.headers.get("cf-mitigated") == "challenge" else ""
+        raise SystemExit(f"XAPK 下载失败：HTTP {exc.code} {endpoint}{challenge}")
     except Exception as exc:
         # 网络与镜像改版都会走到这里，只报一行，别把调用方的输出淹掉。
         raise SystemExit(f"XAPK 提取失败：{type(exc).__name__}: {exc}")

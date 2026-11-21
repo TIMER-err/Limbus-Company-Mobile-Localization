@@ -17,11 +17,13 @@
 | `LOCALIZE_TAG` | `latest` | 汉化 Release 标签 |
 | `GH_TOKEN` | 空 | 查询汉化 Release API 时使用的 GitHub 令牌；Actions 自动提供 |
 | `OFFICIAL_PATCH_URL` | 空 | 指定官方资源目录，跳过解析 |
-| `OFFICIAL_XAPK_URL` | APKPure 最新 XAPK | 从 XAPK 提取资源目录与客户端版本 |
+| `OFFICIAL_XAPK_URL` | APKPure `.net` 最新 XAPK | 从 XAPK 提取资源目录与客户端版本 |
 | `OFFICIAL_CDN_IP` | 空 | 经本地代理访问官方 CDN 时的回源地址 |
 | `OUTPUT_DIR` | `dist/` | 输出目录 |
 
 将 `OFFICIAL_XAPK_URL` 置空可关闭自动解析；此时须通过 `OFFICIAL_PATCH_URL` 指定资源目录。无法解析资源版本目录时构建失败。
+
+默认使用 [APKPure `.net` 下载页](https://apkpure.net/limbus-company/com.ProjectMoon.LimbusCompany/download) 提供的公开下载入口。`.com` 入口可能对云服务器返回 Cloudflare 验证页（HTTP 403）；这不是 GitHub 令牌权限问题。解析器会报告被拒绝的下载地址及验证页类型，并隐藏地址中的签名查询参数。
 
 ## GitHub Actions
 

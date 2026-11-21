@@ -8,7 +8,7 @@ OFFICIAL_CDN_HOST="https://downloadcommon.limbuscompanycdn.org"
 # 资源版本目录不写死在脚本里：它每次客户端更新都会变，写死就会静默产出过期的包。
 # 默认直接从公开镜像的 XAPK 提取；显式给 OFFICIAL_PATCH_URL 可跳过解析。
 OFFICIAL_PATCH_URL="${OFFICIAL_PATCH_URL-}"
-OFFICIAL_XAPK_URL="${OFFICIAL_XAPK_URL-https://d.apkpure.com/b/XAPK/com.ProjectMoon.LimbusCompany?version=latest}"
+OFFICIAL_XAPK_URL="${OFFICIAL_XAPK_URL-https://d.apkpure.net/b/XAPK/com.ProjectMoon.LimbusCompany?version=latest}"
 OFFICIAL_CDN_IP="${OFFICIAL_CDN_IP:-}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
