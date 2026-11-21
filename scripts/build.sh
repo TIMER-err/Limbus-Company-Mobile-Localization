@@ -70,11 +70,10 @@ resolve_from_xapk() {
     sed -n 's/^token=//p' "$build_dir/xapk.txt"
 }
 
-# 从镜像响应头或最终重定向 URL 读取客户端版本号，仅用于 Release 命名。
+# 从同一 XAPK 的 manifest.json 读取客户端版本号，仅请求 ZIP 索引与清单。
 resolve_game_version() {
     [ -n "$OFFICIAL_XAPK_URL" ] || return 1
-    "$PYTHON" "$SCRIPT_DIR/extract-version.py" --game-version \
-        "$OFFICIAL_XAPK_URL" 2>/dev/null
+    "$PYTHON" "$SCRIPT_DIR/extract-version.py" --game-version "$OFFICIAL_XAPK_URL"
 }
 
 # 汉化文本的 Release 资源名里带有版本号，latest 需要先问出实际 tag。
@@ -103,7 +102,7 @@ fi
 
 # CHECK_ONLY 只读取轻量元数据，避免没有更新时扫描 XAPK 获取资源目录。
 if [ -n "${CHECK_ONLY:-}" ]; then
-    game_version=$(resolve_game_version || true)
+    game_version=$(resolve_game_version)
     printf 'localize_tag=%s\n' "$LOCALIZE_TAG"
     printf 'game_version=%s\n' "$game_version"
     exit 0
@@ -135,7 +134,7 @@ resolved_patch_dir=$(
 
 # 显式指定资源目录时，按需从轻量元数据补充客户端版本。
 if [ -n "${EXPECTED_GAME_VERSION:-}" ] || [ -n "${RESOLVE_ONLY:-}" ]; then
-    [ -n "$game_version" ] || game_version=$(resolve_game_version || true)
+    [ -n "$game_version" ] || game_version=$(resolve_game_version)
 fi
 
 # 构建任务重新解析 XAPK；若客户端已在两个任务之间更新，拒绝发布到旧版本标签。

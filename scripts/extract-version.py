@@ -5,22 +5,24 @@
 Unity 资源里。XAPK 是一层 ZIP，内层 UnityDataAssetPack.apk 未压缩因而可直接
 寻址，目录字符串位于其 assets/bin/Data/ 下某个几百字节的条目中。
 
-用法：extract-version.py <xapk-url>
+用法：extract-version.py [--game-version] <xapk-url>
 成功时向 stdout 输出 token=... 与 game_version=...，诊断信息走 stderr。
 """
 
 import email.parser
 import io
+import json
 import re
 import sys
 import time
-import urllib.parse
 import urllib.request
 import zipfile
 
 USER_AGENT = "Mozilla/5.0 (Linux; Android 12)"
 TOKEN = re.compile(rb"downloadcommon\.limbuscompanycdn\.org/(l\d{8}_[A-Za-z0-9_-]+)")
-GAME_VERSION = re.compile(r"(?<![\d.])(\d+\.\d+\.\d+)(?![\d.])")
+GAME_VERSION = re.compile(r"\d+\.\d+\.\d+")
+PACKAGE_NAME = "com.ProjectMoon.LimbusCompany"
+MAX_MANIFEST_SIZE = 65536
 # 目录字符串所在的条目只有几百字节，放宽到 2KB 足够覆盖。
 MAX_ENTRY_SIZE = 2048
 # 相隔小于此值的区间合并，用更少的请求换少量多余流量。
@@ -36,19 +38,8 @@ def log(message):
     print(message, file=sys.stderr)
 
 
-def parse_game_version(*sources):
-    """从响应头或重定向 URL 中提取客户端版本号。"""
-    for source in sources:
-        if not source:
-            continue
-        match = GAME_VERSION.search(urllib.parse.unquote_plus(source))
-        if match:
-            return match.group(1)
-    return ""
-
-
 def fetch_metadata(url):
-    """用单字节 Range GET 读取远程包大小与版本，避开镜像对 HEAD 的限制。"""
+    """用单字节 Range GET 读取包大小并固定最终 URL，不依赖镜像文件名。"""
     for attempt in range(1, METADATA_ATTEMPTS + 1):
         try:
             request = urllib.request.Request(
@@ -57,13 +48,12 @@ def fetch_metadata(url):
             )
             with urllib.request.urlopen(request, timeout=30) as response:
                 content_range = response.headers.get("Content-Range", "")
-                if "/" in content_range:
-                    total = int(content_range.rsplit("/", 1)[1])
-                else:
-                    total = int(response.headers["Content-Length"])
-                disposition = response.headers.get("Content-Disposition", "")
+                match = re.fullmatch(r"bytes 0-0/([1-9]\d*)", content_range)
+                if response.status != 206 or not match:
+                    raise ValueError("镜像未返回有效的单字节 HTTP Range 响应")
+                total = int(match.group(1))
                 final_url = response.geturl()
-            return total, parse_game_version(disposition, final_url)
+            return total, final_url
         except Exception as exc:
             if attempt == METADATA_ATTEMPTS:
                 raise
@@ -158,11 +148,28 @@ def entry_data_offset(archive, info):
     return info.header_offset + 30 + name_length + extra_length
 
 
-def extract(url):
-    total, game_version = fetch_metadata(url)
-    log(f"  远程包 {total:,} 字节" + (f"，客户端 {game_version}" if game_version else ""))
+def read_game_version(archive):
+    """客户端版本以同一 XAPK 内的清单为准，不猜测重定向 URL 或响应头。"""
+    try:
+        info = archive.getinfo("manifest.json")
+    except KeyError as exc:
+        raise ValueError("XAPK 缺少 manifest.json") from exc
+    if info.file_size > MAX_MANIFEST_SIZE:
+        raise ValueError("XAPK manifest.json 超出元数据大小限制")
+    data = json.loads(archive.read(info).decode("utf-8-sig"))
+    if not isinstance(data, dict) or data.get("package_name") != PACKAGE_NAME:
+        raise ValueError("XAPK manifest.json 的包名与 Limbus Company 不符")
+    version = data.get("version_name")
+    if not isinstance(version, str) or not GAME_VERSION.fullmatch(version):
+        raise ValueError("XAPK manifest.json 缺少有效的客户端版本号")
+    return version
 
+
+def extract(url):
+    total, url = fetch_metadata(url)
     outer = open_remote_zip(url, total)
+    game_version = read_game_version(outer)
+    log(f"  远程包 {total:,} 字节，客户端 {game_version}")
     try:
         inner_info = next(
             info for info in outer.infolist()
@@ -217,10 +224,9 @@ def main(argv):
         raise SystemExit(f"用法：{argv[0]} [--game-version] <xapk-url>")
     try:
         if version_only:
-            _, game_version = fetch_metadata(argv[2])
-            if not game_version:
-                raise SystemExit("XAPK 响应中没有客户端版本号")
-            print(game_version)
+            total, url = fetch_metadata(argv[2])
+            with open_remote_zip(url, total) as archive:
+                print(read_game_version(archive))
             return 0
         token, game_version = extract(argv[1])
     except SystemExit:

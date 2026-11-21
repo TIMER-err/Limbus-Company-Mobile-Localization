@@ -27,7 +27,7 @@
 
 [`.github/workflows/build.yml`](.github/workflows/build.yml) 于 UTC+8 08:00、12:00、20:00 检查上游。客户端版本或汉化 Release 变化时构建，并发布 `v<客户端版本>-<汉化标签>`；相同组合已存在时跳过。
 
-检查任务只读取 XAPK 元数据中的客户端版本；仅在需要构建时才扫描 XAPK 获取官方资源目录。
+检查任务用 HTTP Range 读取 XAPK 的 ZIP 索引和 `manifest.json`，以包内 `version_name` 为客户端版本，不依赖镜像响应头或文件名。只有需要构建时才扫描 Unity 资源目录，不下载整个 XAPK。网络或清单解析失败时保留错误并终止检查，不使用旧版本兜底。
 
 ### 缺字审核
 
