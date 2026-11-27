@@ -128,6 +128,8 @@ else
     OFFICIAL_PATCH_URL="$OFFICIAL_CDN_HOST/$resolved/Assets/LocalizePatch"
 fi
 
+OFFICIAL_PATCH_URL="${OFFICIAL_PATCH_URL%/}"
+
 resolved_patch_dir=$(
     printf '%s' "$OFFICIAL_PATCH_URL" | sed -n 's|.*/\(l[0-9]\{8\}_[^/]*\)/.*|\1|p'
 )
@@ -155,8 +157,11 @@ if [ -n "${RESOLVE_ONLY:-}" ]; then
     exit 0
 fi
 
-printf '下载官方日文底包：%s\n' "$OFFICIAL_PATCH_URL/localize_jp.zip"
-download_official "$OFFICIAL_PATCH_URL/localize_jp.zip" "$build_dir/base.zip"
+# ZIP 与清单分目录发布，二者必须使用同一客户端资源版本根目录。
+official_resource_root="${OFFICIAL_PATCH_URL%/Assets/LocalizePatch}"
+official_base_zip_url="$official_resource_root/Assets/Resources_moved/Localize/localize_jp.zip"
+printf '下载官方日文底包：%s\n' "$official_base_zip_url"
+download_official "$official_base_zip_url" "$build_dir/base.zip"
 
 # 底包无 .hash 可校验，改为在 Python 阶段逐个文件比对清单，见下。
 
